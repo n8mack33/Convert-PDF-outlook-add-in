@@ -6,7 +6,7 @@ const HtmlWebpackPlugin = require("html-webpack-plugin");
 const webpack = require("webpack");
 
 const urlDev = "https://localhost:3000/";
-const urlProd = "https://www.contoso.com/"; // CHANGE THIS TO YOUR PRODUCTION DEPLOYMENT LOCATION
+const urlProd = "https://convert-pdf-outlook-add-in.vercel.app/"; // CHANGE THIS TO YOUR PRODUCTION DEPLOYMENT LOCATION https://www.contoso.com                   https://convert-pdf-outlook-add-in.vercel.app/
 
 async function getHttpsOptions() {
   const httpsOptions = await devCerts.getHttpsServerOptions();
