@@ -330,7 +330,7 @@ export const App = () => {
     <div className={classNames.taskpane}>
       <header className={classNames.header}>
         <div className={classNames.headerLogo}><Icon iconName="PDF" styles={{ root: { color: '#ffffff', fontSize: 20 } }} /></div>
-        <Text className={classNames.headerTitle}>PDF Power Converter</Text>
+        <Text className={classNames.headerTitle}>PDF Converter</Text>
       </header>
       
       {globalStatus && !isConverting && (
