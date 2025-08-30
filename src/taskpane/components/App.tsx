@@ -86,7 +86,6 @@ const sanitizeFilename = (name: string): string => {
 
 const blobToBase64 = (blob: Blob): Promise<string> => { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => { const dataUrl = reader.result as string; resolve(dataUrl.split(',')[1]); }; reader.onerror = (error) => reject(error); reader.readAsDataURL(blob); }); };
 
-
 // --- STYLING (UNCHANGED) ---
 const classNames = mergeStyleSets({
   taskpane: { display: 'flex', flexDirection: 'column', height: '100vh', backgroundColor: '#f7f9fc', },
@@ -179,20 +178,64 @@ export const App = () => {
     setProgress(0);
     setGlobalStatus({ message: 'Starting conversion...', type: 'info' });
 
-    const totalSteps = selectedAttachments.length * 5;
+    const totalConversionSteps = selectedAttachments.length * 3;  // Validate + Upload + Convert per file
+    const totalModSteps = (removeOriginal ? selectedAttachments.length : 0) + selectedAttachments.length + 1;  // Removes + Attaches + Save
+    const totalSteps = totalConversionSteps + totalModSteps;
     let completedSteps = 0;
     const updateProgress = () => {
       completedSteps++;
       setProgress((completedSteps / totalSteps) * 100);
     };
 
-    const results = await Promise.allSettled(
-      selectedAttachments.map(att => processAttachment(att, updateProgress))
-    );
-    // You can add result handling logic here if needed
+    const pdfResults: { att: IAttachment; pdfBlob: Blob }[] = [];
+    let successCount = 0;
+    let errorCount = 0;
+
+    // Sequential conversions
+    for (const att of selectedAttachments) {
+      try {
+        const pdfBlob = await processAttachment(att, updateProgress);
+        pdfResults.push({ att, pdfBlob });
+        successCount++;
+      } catch {
+        errorCount++;
+      }
+    }
+
+    // Batch removes (if enabled)
+    if (removeOriginal) {
+      for (const { att } of pdfResults) {
+        updateAttachmentStatus(att.id, 'processing', 'Tidying up...');
+        await removeAttachmentAsync(att.id);
+        updateProgress();
+      }
+    }
+
+    // Batch attaches
+    let currentAttachmentNames = (await getAttachmentsAsync()).map(a => a.name);
+    for (const { att, pdfBlob } of pdfResults) {
+      updateAttachmentStatus(att.id, 'processing', 'Attaching PDF...');
+      const uniquePdfName = generateUniqueAttachmentName(att.newName, currentAttachmentNames);
+      const pdfBase64 = await blobToBase64(pdfBlob);
+      await addFileAttachmentFromBase64Async(pdfBase64, uniquePdfName);
+      currentAttachmentNames.push(uniquePdfName);  // Update in-memory to avoid duplicates
+      updateAttachmentStatus(att.id, 'success', 'Converted!');
+      updateProgress();
+    }
+
+    // Single save at end
+    await saveItemAsync();
+    updateProgress();
+
+    setIsConverting(false);
+    await loadAttachments();  // Refresh UI state
+    setGlobalStatus({
+      message: `Conversion complete: ${successCount} succeeded, ${errorCount} failed.`,
+      type: errorCount > 0 ? 'warning' : 'success'
+    });
   };
 
-  const processAttachment = async (attachment: IAttachment, onProgress: () => void) => {
+  const processAttachment = async (attachment: IAttachment, onProgress: () => void): Promise<Blob> => {
     let tempItemId: string | null = null;
     try {
       updateAttachmentStatus(attachment.id, 'processing', 'Validating...');
@@ -216,31 +259,26 @@ export const App = () => {
       onProgress(); 
 
       updateAttachmentStatus(attachment.id, 'processing', 'Converting...');
-      const Newtoken = await Get_Token_SSO();
-      const pdfBlob = await convertFileToPdf(Newtoken, tempItemId);
+      const pdfBlob = await convertFileToPdf(token, tempItemId);  // Reuse token for simplicity; refresh if needed
       onProgress();
 
-      if (removeOriginal) {
-        updateAttachmentStatus(attachment.id, 'processing', 'Tidying up...');
-        await removeAttachmentAsync(attachment.id);
-      }
-      await saveItemAsync();
-      onProgress();
-      
-      updateAttachmentStatus(attachment.id, 'processing', 'Attaching PDF...');
-      const currentAttachmentNames = (await getAttachmentsAsync()).map(a => a.name);
-      const uniquePdfName = generateUniqueAttachmentName(attachment.newName, currentAttachmentNames);
-      const pdfBase64 = await blobToBase64(pdfBlob);
-      await addFileAttachmentFromBase64Async(pdfBase64, uniquePdfName);
-      onProgress();
-
-      updateAttachmentStatus(attachment.id, 'success', 'Converted!');
+      return pdfBlob;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       updateAttachmentStatus(attachment.id, 'error', errorMessage);
       throw error;
     } finally {
-      if (tempItemId) { /* Your cleanup logic can go here */ }
+      if (tempItemId) {
+        try {
+          const cleanupToken = await Get_Token_SSO();
+          await fetch(`${GRAPH_API_ENDPOINT}/me/drive/items/${tempItemId}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${cleanupToken}` }
+          });
+        } catch (cleanupError) {
+          console.warn(`Failed to delete temp file ${tempItemId}: ${cleanupError.message}`);
+        }
+      }
     }
   };
 
@@ -308,6 +346,7 @@ export const App = () => {
           <div className={classNames.emptyState}>
             <Icon iconName="OpenFile" className={classNames.emptyStateIcon} />
             <Text variant="large" styles={{ root: { fontWeight: FontWeights.semibold, color: '#4a5568' } }}>Ready for Action</Text>
+            <br/>
             <Text styles={{ root: { marginTop: 8 } }}>No convertible files were found in this email.</Text>
           </div>
         ) : attachments.map(att => {
